@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>StoveFan Dashboard</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
+    .card { padding: 16px; border: 1px solid #ddd; border-radius: 12px; max-width: 1100px; }
+    input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; margin: 6px 0 10px; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; cursor: pointer; margin-right: 8px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .small { opacity: 0.75; font-size: 12px; }
+    .bad { color: #b00020; font-weight: 700; }
+    .ok { color: #0a7a0a; font-weight: 700; }
+    .layout { display: grid; grid-template-columns: 320px 1fr; gap: 12px; align-items: start; }
+    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+    .panelTitle { font-weight: 700; margin: 0 0 8px; }
+    .sessionsBox {
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      padding: 10px;
+      max-height: 420px;
+      overflow: auto;
+      background: #fafafa;
+    }
+    .sessionItem {
+      padding: 10px 10px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: grid;
+      gap: 2px;
+      margin-bottom: 8px;
+      background: white;
+    }
+    .sessionItem:hover { border-color: #cfcfcf; }
+    .sessionItem.active { border-color: #333; }
+    .sessionRow { display: flex; justify-content: space-between; gap: 10px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; opacity: 0.85; }
+    .gridCharts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 760px) { .gridCharts { grid-template-columns: 1fr; } }
+    canvas { max-height: 520px; }
+    select { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; margin: 6px 0 10px; }
+    .toolbar { display:flex; gap:8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  </style>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <h1>StoveFan – Graph</h1>
+
+  <div class="card" style="max-width: 520px; margin-bottom: 14px;">
+    <div class="small">Sign in (Email/Password)</div>
+    <label class="small">Email</label>
+    <input id="email" type="email" placeholder="tester@example.com" />
+    <label class="small">Password</label>
+    <input id="password" type="password" placeholder="••••••••" />
+    <div>
+      <button id="signInBtn">Sign in</button>
+      <button id="signOutBtn" style="display:none;">Sign out</button>
+    </div>
+    <div class="small" id="authStatus">Not signed in.</div>
+  </div>
+
+  <div class="layout">
+    <!-- LEFT: session picker -->
+    <div class="card">
+      <div class="panelTitle">Sessions</div>
+      <div class="small">Device</div>
+      <select id="deviceSelect" disabled>
+        <option value="">Sign in to load devices…</option>
+      </select>
+
+      <div class="small" id="sessionsStatus">—</div>
+      <div class="sessionsBox" id="sessionsBox"></div>
+    </div>
+
+    <!-- RIGHT: charts -->
+    <div class="card">
+      <div id="status" class="small">Not listening yet.</div>
+      <div class="small" id="pathInfo">—</div>
+
+      <div class="toolbar">
+        <button id="olderBtn" disabled>Older</button>
+        <button id="liveBtn" disabled>Live</button>
+        <button id="downloadCsvBtn" disabled>Download CSV</button>
+        <span class="small" id="rangeInfo">—</span>
+      </div>
+
+      <div class="gridCharts" style="margin-top: 10px;">
+        <div><canvas id="tempChart"></canvas></div>
+        <div><canvas id="voltChart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getDatabase, ref, onValue, onChildAdded, query,
+      limitToLast, limitToFirst, orderByKey, endAt, startAfter, get
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyDVaoj3wQuv2K8kRcIpHHlJ7Eimk6fwSw8",
+      authDomain: "stove-fanatic.firebaseapp.com",
+      databaseURL: "https://stove-fanatic-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "stove-fanatic",
+      storageBucket: "stove-fanatic.firebasestorage.app",
+      messagingSenderId: "770454213072",
+      appId: "1:770454213072:web:bb3d646b430f5af8cca9d5",
+      measurementId: "G-HM621MXRLV"
+    };
+
+    const HISTORY_POINTS = 6000;
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const auth = getAuth(app);
+
+    // UI
+    const authStatus = document.getElementById("authStatus");
+    const signInBtn = document.getElementById("signInBtn");
+    const signOutBtn = document.getElementById("signOutBtn");
+    const statusEl = document.getElementById("status");
+    const pathInfoEl = document.getElementById("pathInfo");
+    const deviceSelect = document.getElementById("deviceSelect");
+    const sessionsBox = document.getElementById("sessionsBox");
+    const sessionsStatus = document.getElementById("sessionsStatus");
+
+    const olderBtn = document.getElementById("olderBtn");
+    const liveBtn = document.getElementById("liveBtn");
+    const downloadCsvBtn = document.getElementById("downloadCsvBtn");
+    const rangeInfoEl = document.getElementById("rangeInfo");
+
+    // Charts
+    const tempCtx = document.getElementById("tempChart");
+    const voltCtx = document.getElementById("voltChart");
+    const labels = [];
+    const tempData = [[], [], [], []];
+    const voltData = [];
+
+    function pushPoint(label, temps, volt) {
+      labels.push(label);
+      for (let i = 0; i < 4; i++) tempData[i].push(Number(temps?.[i]));
+      voltData.push(Number(volt));
+      if (labels.length > HISTORY_POINTS) {
+        labels.shift();
+        for (let i = 0; i < 4; i++) tempData[i].shift();
+        voltData.shift();
+      }
+    }
+
+    const tempChart = new Chart(tempCtx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "Temp 0", data: tempData[0], tension: 0.2, pointRadius: 0 },
+          { label: "Temp 1", data: tempData[1], tension: 0.2, pointRadius: 0 },
+          { label: "Temp 2", data: tempData[2], tension: 0.2, pointRadius: 0 },
+          { label: "Temp 3", data: tempData[3], tension: 0.2, pointRadius: 0 },
+        ]
+      },
+      options: {
+        animation: false,
+        responsive: true,
+        scales: {
+          y: { title: { display: true, text: "°C" } },
+          x: { title: { display: true, text: "t (s)" } }
+        }
+      }
+    });
+
+    const voltChart = new Chart(voltCtx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [{ label: "TEG Voltage", data: voltData, tension: 0.2, pointRadius: 0 }]
+      },
+      options: {
+        animation: false,
+        responsive: true,
+        scales: {
+          y: { title: { display: true, text: "V" } },
+          x: { title: { display: true, text: "t (s)" } }
+        }
+      }
+    });
+
+    function redraw() { tempChart.update("none"); voltChart.update("none"); }
+
+    function clearAll() {
+      labels.length = 0;
+      for (let i = 0; i < 4; i++) tempData[i].length = 0;
+      voltData.length = 0;
+      redraw();
+    }
+
+    // Listener cleanup (prevents “connections keep growing”)
+    let unsubMetaCols = null;
+    let unsubLiveRows = null;
+
+    function stopListening() {
+      if (typeof unsubMetaCols === "function") unsubMetaCols();
+      if (typeof unsubLiveRows === "function") unsubLiveRows();
+      unsubMetaCols = null;
+      unsubLiveRows = null;
+      statusEl.textContent = "Stopped.";
+    }
+
+    // Selection state
+    let currentUser = null;
+    let currentDeviceId = "";
+    let currentSessionId = "";
+
+    // Window navigation state (keys in rowsJson)
+    let rowsPath = "";
+    let metaColsPath = "";
+    let metaHeaderPath = "";
+    let rowsCsvPath = "";
+    let windowOldestKey = "";
+    let windowNewestKey = "";
+    let followLive = true; // true = newest window + live appends
+
+    function setButtonsEnabled(enabled) {
+      olderBtn.disabled = !enabled;
+      liveBtn.disabled = !enabled;
+      downloadCsvBtn.disabled = !enabled;
+    }
+
+    function updateRangeInfo() {
+      if (!windowOldestKey || !windowNewestKey) {
+        rangeInfoEl.textContent = "—";
+        return;
+      }
+      rangeInfoEl.textContent =
+        `${followLive ? "Live" : "Browsing"} | keys ${windowOldestKey} … ${windowNewestKey} | points ${labels.length}`;
+    }
+
+    function renderSessionItem(sessionId, meta) {
+      const div = document.createElement("div");
+      div.className = "sessionItem";
+      div.dataset.sessionId = sessionId;
+
+      const started = meta?.startedAtEpoch ? new Date(meta.startedAtEpoch * 1000).toLocaleString() : "—";
+      const file = meta?.filename || "";
+      const period = meta?.samplePeriodMs ?? "";
+
+      div.innerHTML = `
+        <div class="sessionRow">
+          <div><strong>${sessionId}</strong></div>
+          <div class="mono">${period ? `${period}ms` : ""}</div>
+        </div>
+        <div class="mono">${started}</div>
+        <div class="mono">${file}</div>
+      `;
+
+      div.addEventListener("click", () => selectSession(sessionId));
+      return div;
+    }
+
+    function setActiveSessionUI(sessionId) {
+      [...sessionsBox.querySelectorAll(".sessionItem")].forEach(el => {
+        el.classList.toggle("active", el.dataset.sessionId === sessionId);
+      });
+    }
+
+    async function loadDevicesAndSessions() {
+      sessionsBox.innerHTML = "";
+      sessionsStatus.textContent = "Loading devices…";
+      deviceSelect.innerHTML = "";
+      deviceSelect.disabled = true;
+
+      const uid = currentUser.uid;
+      const snap = await get(ref(db, `/logs/${uid}`));
+
+      if (!snap.exists()) {
+        sessionsStatus.textContent = "No data under /logs/<uid> yet.";
+        return;
+      }
+
+      const devicesObj = snap.val() || {};
+      const deviceIds = Object.keys(devicesObj);
+
+      if (deviceIds.length === 0) {
+        sessionsStatus.textContent = "No devices found.";
+        return;
+      }
+
+      for (const d of deviceIds) {
+        const opt = document.createElement("option");
+        opt.value = d;
+        opt.textContent = d;
+        deviceSelect.appendChild(opt);
+      }
+
+      deviceSelect.disabled = false;
+      currentDeviceId = deviceIds[0];
+      deviceSelect.value = currentDeviceId;
+
+      deviceSelect.onchange = () => {
+        currentDeviceId = deviceSelect.value;
+        currentSessionId = "";
+        stopListening();
+        clearAll();
+        setButtonsEnabled(false);
+        loadSessionsForDevice();
+      };
+
+      await loadSessionsForDevice();
+    }
+
+    async function loadSessionsForDevice() {
+      sessionsBox.innerHTML = "";
+      sessionsStatus.textContent = "Loading sessions…";
+
+      const uid = currentUser.uid;
+      const snap = await get(ref(db, `/logs/${uid}/${currentDeviceId}/sessions`));
+
+      if (!snap.exists()) {
+        sessionsStatus.textContent = "No sessions for this device yet.";
+        return;
+      }
+
+      const sessionsObj = snap.val() || {};
+      const sessionIds = Object.keys(sessionsObj).sort((a,b) => b.localeCompare(a));
+
+      sessionsStatus.textContent = `${sessionIds.length} session(s). Click one to view.`;
+      for (const sid of sessionIds) {
+        const meta = sessionsObj[sid]?.meta || {};
+        sessionsBox.appendChild(renderSessionItem(sid, meta));
+      }
+
+      if (sessionIds.length) selectSession(sessionIds[0]);
+    }
+
+    function selectSession(sessionId) {
+      currentSessionId = sessionId;
+      setActiveSessionUI(sessionId);
+      followLive = true;
+      stopListening();
+      clearAll();
+      startSession();
+    }
+
+    function buildPaths() {
+      const uid = currentUser.uid;
+      const base = `/logs/${uid}/${currentDeviceId}/sessions/${currentSessionId}`;
+      rowsPath = `${base}/rowsJson`;
+      metaColsPath = `${base}/meta/columns`;
+      metaHeaderPath = `${base}/meta/header`;
+      rowsCsvPath = `${base}/rowsCsv`;
+
+      pathInfoEl.textContent = `rows: ${rowsPath} | csv: ${rowsCsvPath}`;
+    }
+
+    async function loadWindowLatest() {
+      // Load the newest HISTORY_POINTS from rowsJson
+      statusEl.textContent = "Loading latest window…";
+      const q = query(ref(db, rowsPath), orderByKey(), limitToLast(HISTORY_POINTS));
+      const snap = await get(q);
+
+      clearAll();
+
+      if (!snap.exists()) {
+        statusEl.innerHTML = `<span class="bad">No rowsJson data for this session.</span>`;
+        windowOldestKey = "";
+        windowNewestKey = "";
+        updateRangeInfo();
+        return;
+      }
+
+      const obj = snap.val() || {};
+      const keys = Object.keys(obj).sort(); // oldest -> newest
+
+      windowOldestKey = keys[0];
+      windowNewestKey = keys[keys.length - 1];
+
+      for (const k of keys) {
+        const row = obj[k];
+        const tSec = row?.tSec ?? "";
+        const temps = Array.isArray(row?.temps) ? row.temps : [];
+        const voltage = row?.voltage ?? NaN;
+        pushPoint(tSec, temps, voltage);
+      }
+
+      redraw();
+      statusEl.innerHTML = `<span class="ok">Showing latest window ✓</span>`;
+      updateRangeInfo();
+    }
+
+    async function loadWindowOlder() {
+      if (!windowOldestKey) return;
+
+      followLive = false;
+      stopListening(); // pause live while browsing older
+      statusEl.textContent = "Loading older window…";
+
+      // Fetch older than current oldest: endAt(oldestKey) + limitToLast(HISTORY_POINTS+1), then drop overlap.
+      const q = query(ref(db, rowsPath), orderByKey(), endAt(windowOldestKey), limitToLast(HISTORY_POINTS + 1));
+      const snap = await get(q);
+
+      if (!snap.exists()) {
+        statusEl.innerHTML = `<span class="bad">No older data.</span>`;
+        updateRangeInfo();
+        return;
+      }
+
+      const obj = snap.val() || {};
+      const keys = Object.keys(obj).sort(); // oldest -> newest
+
+      // Drop overlap (the last entry will be the current windowOldestKey)
+      const trimmed = (keys[keys.length - 1] === windowOldestKey) ? keys.slice(0, -1) : keys;
+      if (trimmed.length === 0) {
+        statusEl.innerHTML = `<span class="bad">No older data.</span>`;
+        updateRangeInfo();
+        return;
+      }
+
+      clearAll();
+
+      windowOldestKey = trimmed[0];
+      windowNewestKey = trimmed[trimmed.length - 1];
+
+      for (const k of trimmed) {
+        const row = obj[k];
+        const tSec = row?.tSec ?? "";
+        const temps = Array.isArray(row?.temps) ? row.temps : [];
+        const voltage = row?.voltage ?? NaN;
+        pushPoint(tSec, temps, voltage);
+      }
+
+      redraw();
+      statusEl.innerHTML = `<span class="ok">Browsing older data ✓</span>`;
+      updateRangeInfo();
+    }
+
+    function attachLiveListenerFromNewest() {
+      if (!followLive || !windowNewestKey) return;
+
+      // Only append rows strictly after current newest key
+      const q = query(ref(db, rowsPath), orderByKey(), startAfter(windowNewestKey));
+
+      unsubLiveRows = onChildAdded(q, (snap) => {
+        if (!snap.exists()) return;
+        const row = snap.val();
+
+        windowNewestKey = snap.key;
+
+        const tSec = row?.tSec ?? "";
+        const temps = Array.isArray(row?.temps) ? row.temps : [];
+        const voltage = row?.voltage ?? NaN;
+
+        pushPoint(tSec, temps, voltage);
+        redraw();
+
+        statusEl.innerHTML =
+          `<span class="ok">Live chart updating ✓</span> (showing last ${Math.min(labels.length, HISTORY_POINTS)} points)`;
+        updateRangeInfo();
+      }, (err) => {
+        statusEl.innerHTML = `<span class="bad">Live listener error:</span> ${err?.message || err}`;
+      });
+    }
+
+    function attachMetaColsListener() {
+      unsubMetaCols = onValue(ref(db, metaColsPath), (snap) => {
+        const cols = snap.val();
+        if (cols && typeof cols === "object") {
+          const names = [cols["1"], cols["2"], cols["3"], cols["4"]].map(v => v || "");
+          tempChart.data.datasets[0].label = names[0] || "Temp 0";
+          tempChart.data.datasets[1].label = names[1] || "Temp 1";
+          tempChart.data.datasets[2].label = names[2] || "Temp 2";
+          tempChart.data.datasets[3].label = names[3] || "Temp 3";
+          redraw();
+        }
+      }, (err) => {
+        statusEl.innerHTML = `<span class="bad">Meta listener error:</span> ${err?.message || err}`;
+      });
+    }
+
+    async function startSession() {
+      if (!currentUser || !currentDeviceId || !currentSessionId) return;
+
+      buildPaths();
+      setButtonsEnabled(true);
+
+      // Meta labels
+      attachMetaColsListener();
+
+      // Load newest window + then live updates
+      await loadWindowLatest();
+
+      // If no data, still allow CSV download attempt (it’ll fail nicely)
+      stopListening();            // reset listeners cleanly
+      attachMetaColsListener();   // reattach meta (stopListening removed it)
+      if (followLive) attachLiveListenerFromNewest();
+    }
+
+    // ---- CSV download ----
+    async function downloadCsvForCurrentSession() {
+      if (!currentUser || !currentDeviceId || !currentSessionId) return;
+
+      statusEl.textContent = "Preparing CSV download…";
+
+      // 1) Try to read header line from meta/header
+      let headerLine = "";
+      try {
+        const headerSnap = await get(ref(db, metaHeaderPath));
+        if (headerSnap.exists()) headerLine = String(headerSnap.val() || "");
+      } catch {}
+
+      // 2) Try rowsCsv first (fastest, already formatted)
+      try {
+        const csvSnap = await get(query(ref(db, rowsCsvPath), orderByKey()));
+        if (csvSnap.exists()) {
+          const obj = csvSnap.val() || {};
+          const keys = Object.keys(obj).sort();
+          const lines = [];
+
+          if (headerLine) lines.push(headerLine);
+
+          for (const k of keys) {
+            const line = obj[k];
+            if (typeof line === "string" && line.trim().length) lines.push(line);
+          }
+
+          if (lines.length === 0) throw new Error("rowsCsv is empty.");
+
+          const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `${currentDeviceId}_${currentSessionId}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+
+          statusEl.innerHTML = `<span class="ok">CSV downloaded ✓</span>`;
+          return;
+        }
+      } catch (e) {
+        // Fall back to rowsJson below
+        console.warn("rowsCsv download failed, falling back to rowsJson:", e);
+      }
+
+      // 3) Fallback: build CSV from rowsJson (works even if you disabled rowsCsv)
+      const jsonSnap = await get(query(ref(db, rowsPath), orderByKey()));
+      if (!jsonSnap.exists()) {
+        statusEl.innerHTML = `<span class="bad">No data to download.</span>`;
+        return;
+      }
+
+      const obj = jsonSnap.val() || {};
+      const keys = Object.keys(obj).sort();
+
+      // If meta/header wasn’t available, create a sane default
+      if (!headerLine) {
+        headerLine = "tSec, temp0, temp1, temp2, temp3, voltage";
+      }
+
+      const lines = [headerLine];
+
+      for (const k of keys) {
+        const row = obj[k] || {};
+        const tSec = row?.tSec ?? "";
+        const temps = Array.isArray(row?.temps) ? row.temps : [];
+        const v = row?.voltage ?? "";
+        const line = [
+          tSec,
+          temps[0] ?? "",
+          temps[1] ?? "",
+          temps[2] ?? "",
+          temps[3] ?? "",
+          v
+        ].join(", ");
+        lines.push(line);
+      }
+
+      const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${currentDeviceId}_${currentSessionId}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      statusEl.innerHTML = `<span class="ok">CSV downloaded ✓</span>`;
+    }
+
+    // Toolbar buttons
+    olderBtn.addEventListener("click", async () => {
+      await loadWindowOlder();
+      // When browsing older, enable “Live” button so you can jump back.
+      updateRangeInfo();
+    });
+
+    liveBtn.addEventListener("click", async () => {
+      followLive = true;
+      stopListening();
+      attachMetaColsListener();
+      await loadWindowLatest();
+      attachLiveListenerFromNewest();
+      updateRangeInfo();
+    });
+
+    downloadCsvBtn.addEventListener("click", async () => {
+      try {
+        await downloadCsvForCurrentSession();
+      } catch (e) {
+        statusEl.innerHTML = `<span class="bad">CSV download failed:</span> ${e?.message || e}`;
+      }
+    });
+
+    // Auth UI
+    signInBtn.addEventListener("click", async () => {
+      const email = document.getElementById("email").value.trim();
+      const pass = document.getElementById("password").value;
+      try {
+        await signInWithEmailAndPassword(auth, email, pass);
+      } catch (e) {
+        authStatus.innerHTML = `<span class="bad">Sign-in failed:</span> ${e?.message || e}`;
+      }
+    });
+
+    signOutBtn.addEventListener("click", async () => {
+      await signOut(auth);
+    });
+
+    onAuthStateChanged(auth, async (user) => {
+      stopListening();
+      clearAll();
+      setButtonsEnabled(false);
+      rangeInfoEl.textContent = "—";
+      sessionsBox.innerHTML = "";
+      deviceSelect.innerHTML = `<option value="">—</option>`;
+      deviceSelect.disabled = true;
+
+      if (!user) {
+        currentUser = null;
+        authStatus.textContent = "Not signed in.";
+        signOutBtn.style.display = "none";
+        sessionsStatus.textContent = "Sign in to load sessions…";
+        return;
+      }
+
+      currentUser = user;
+      authStatus.textContent = `Signed in as: ${user.email || user.uid}`;
+      signOutBtn.style.display = "inline-block";
+
+      await loadDevicesAndSessions();
+    });
+  </script>
+</body>
+</html>
