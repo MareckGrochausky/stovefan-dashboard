@@ -14,7 +14,7 @@
     .bad { color: #b00020; font-weight: 700; }
     .ok { color: #0a7a0a; font-weight: 700; }
     .layout { display: grid; grid-template-columns: 320px 1fr; gap: 12px; align-items: start; }
-    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+    @media (max-width: 980px) { .layout { grid-template-columns: 1fr 1fr; } }
     .panelTitle { font-weight: 700; margin: 0 0 8px; }
     .sessionsBox {
       border: 1px solid #ddd;
@@ -27,7 +27,7 @@
     .sessionItem {
       padding: 10px 10px;
       border-radius: 10px;
-      border: 1px solid transparent;
+      border: 5px solid transparent;
       cursor: pointer;
       display: grid;
       gap: 2px;
@@ -38,8 +38,8 @@
     .sessionItem.active { border-color: #333; }
     .sessionRow { display: flex; justify-content: space-between; gap: 10px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; opacity: 0.85; }
-    .gridCharts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 760px) { .gridCharts { grid-template-columns: 1fr; } }
+    .gridCharts { display: grid; grid-template-rows: 1fr 1fr; gap: 12px; }
+    @media (max-width: 760px) { .gridCharts { grid-template-rows: 1fr 1fr; } }
     canvas { max-height: 520px; }
     select { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; margin: 6px 0 10px; }
     .toolbar { display:flex; gap:8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
@@ -72,7 +72,6 @@
       <select id="deviceSelect" disabled>
         <option value="">Sign in to load devices…</option>
       </select>
-
       <div class="small" id="sessionsStatus">—</div>
       <div class="sessionsBox" id="sessionsBox"></div>
     </div>
